@@ -6,4 +6,12 @@ import Text.ParserCombinators.Parsec hiding (spaces)
 main :: IO ()
 main = do
     args <- getArgs
-    putStrLn ("Hello, " ++ args !! 0 ++ " " ++ args !! 1)
+    putStrLn (readExpr (args !! 0))
+
+readExpr :: String -> String
+readExpr input = case parse symbol "lisp" input of
+    Left e  -> "No match: " ++ show e
+    Right x -> "Found value"
+
+symbol :: Parser Char
+symbol = oneOf "!$%&|*+-/:<=>?@^_~"
