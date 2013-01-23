@@ -1,11 +1,12 @@
+{-# OPTIONS -XFlexibleInstances #-}
 module Main where
 
 import Control.Monad
+import Data.Array
+import Data.Array.IO
 import Numeric
 import System.Environment
 import Text.ParserCombinators.Parsec hiding (spaces)
-
-type Real = Float
 
 data LispVal = Atom String
              | Bool Bool
@@ -14,7 +15,8 @@ data LispVal = Atom String
              | List [LispVal]
              | Number Integer
              | String String
-               deriving (Show)
+             -- | Vector (IOArray Int LispVal)
+             | Vector [LispVal]
 
 data LispNum = Complex Float Float
              | Real Float
@@ -22,54 +24,96 @@ data LispNum = Complex Float Float
              | Integer Integer
                deriving (Show)
 
+instance Show LispVal where
+--    show :: LispVal -> String
+    show (Atom v) = v
+    show (Bool True) = "#t"
+    show (Bool False) = "#f"
+    show (Character char) = "#\\" ++ [char]
+    show (DottedList head tail) = ("(" ++ (unwords . map show) head ++ " . " ++ show tail ++ ")")
+    show (List list) = "(" ++ (unwords . map show) list ++ ")"
+    show (Number n) = show n
+    show (String s) = "\"" ++ s ++ "\""
+    show (Vector vector) = "#(" ++ (unwords . map show) vector ++ ")"
+    show n = error "Undefined instance of Show LispVal"
+
+instance Show (IOArray Int LispVal) where
+    show _ = "oh dear"
+
 main :: IO ()
 main = do
     args <- getArgs
-    putStrLn (readExpr (args !! 0))
+    val <- (return . show . eval . readExpr) (args !! 0)
+    putStrLn val
 
-readExpr :: String -> String
+eval :: LispVal -> LispVal
+eval val@(Bool _) = val
+eval val@(Number _) = val
+eval val@(String _) = val
+eval (List [Atom "quote", val]) = val
+
+readExpr :: String -> LispVal
 readExpr input = case parse parseExpr "lisp" input of
-    Left e  -> "No match: "    ++ show e
-    Right e -> "Found value: " ++ show e
+    Left e  -> String ("No match: "    ++ show e)
+    Right v -> v
 
 parseExpr :: Parser LispVal
 parseExpr = parseAtom
         <|> parseSharp
         <|> parseNumber
         <|> parseString
---        <|> parseQuasiquote
         <|> parseQuote
         <|> between (char '(') (char ')') parseList
 
 parseSharp :: Parser LispVal
 parseSharp = do
     char '#'
-    x <- anyChar
-    xs <- many (noneOf " ")
-    let val | x == 't'      = Bool True
-            | x == 'f'      = Bool False
-            | x =='\\'      = Character (parseCharacter x xs)
-            | elem x "bodx" = Number (parseSharpNumber x xs)
-            | otherwise     = error "Invalid sharp expression."
+    val <- (parseBool <|> parseCharacter <|> parseSharpNumber <|> parseVector)
     return val where
-        parseCharacter :: Char -> [Char] -> Char
-        parseCharacter _ [c] = c
-        parseCharacter _ cs  = case cs of
-            "space"   -> ' '
-            "newline" -> '\n'
-            otherwise -> error "Invalid character expression."
+        parseBool :: Parser LispVal
+        parseBool = (char 't' >> return (Bool True)) <|> (char 'f' >> return (Bool False))
         
-        parseSharpNumber :: Char -> [Char] -> Integer
-        parseSharpNumber base []  = error "Invalid numeric expression."
-        parseSharpNumber base num = case (parseSharpNumber' base num) of
-            [(n,[])]   -> n
-            _          -> error "Invalid numeric expression."
-            where
-                parseSharpNumber' 'b' num = readBin num
-                parseSharpNumber' 'o' num = readOct num
-                parseSharpNumber' 'd' num = readDec num
-                parseSharpNumber' 'x' num = readHex num
-                parseSharpNumber' _   num = error "Invalid numeric expression."
+        parseCharacter :: Parser LispVal
+        parseCharacter = do
+            char '\\'
+            name <- many (noneOf " )")
+            (return . Character) (parseCharacter' name) where
+                parseCharacter' [c] = c
+                parseCharacter' cs  = case cs of
+                    "space"   -> ' '
+                    "newline" -> '\n'
+                    otherwise -> error "Invalid character expression."
+        
+        parseSharpNumber :: Parser LispVal
+        parseSharpNumber = do
+            base <- oneOf "bodx"
+            num  <- many (noneOf " ")
+            (return . Number) (parseSharpNumber' base num) where
+                parseSharpNumber' base []  = error "Invalid numeric expression."
+                parseSharpNumber' base num = case (readNum base num) of
+                    [(n,[])]   -> n
+                    _          -> error "Invalid numeric expression."
+                    where
+                        readNum 'b' num = readBin num
+                        readNum 'o' num = readOct num
+                        readNum 'd' num = readDec num
+                        readNum 'x' num = readHex num
+                        readNum _   num = error "Invalid numeric expression."
+        
+        parseVector :: Parser LispVal
+        parseVector = do
+            list <- between (char '(') (char ')') parseList
+            let l (List xs) = xs
+                l _         = error "Invalid vector expression"
+            (return . Vector) (l list)
+        {-
+        parseVector = do
+            list <- between (char '(') (char ')') parseList
+            array <- case list of
+                (List l) -> newListArray (1, length l) l -- :: Parser (IOArray Int LispVal)
+                _        -> error "Invalid vector expression"
+            return (Number 0)
+        -}
 
 parseAtom :: Parser LispVal
 parseAtom = do
@@ -94,19 +138,14 @@ parseNumber = do
     number <- many1 digit
     return (Number (read number))
 
-{-
-parseQuasiquote :: Parser LispVal
-parseQuasiquote = parseQuasiquote' <|> parseUnquasiquote where
-    parseQuasiquote = 
-    
-    parseUnquasiquote = 
--}
-
 parseQuote :: Parser LispVal
 parseQuote = do
-    char '\''
+    c <- oneOf "\'`,"
     expr <- parseExpr
-    return (List [Atom "quote", expr])
+    (return . List) $ case c of
+        '\'' -> [Atom "quote", expr]
+        ','  -> [Atom "unquote", expr]
+        '`'  -> [Atom "quasiquote", expr]
 
 parseString :: Parser LispVal
 parseString = do
